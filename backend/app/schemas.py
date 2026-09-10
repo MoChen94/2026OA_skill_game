@@ -80,6 +80,7 @@ class DispatchIn(BaseModel):
 
 class CompleteIn(BaseModel):
     result: str = ""
+    draft_file_ids: Optional[list[int]] = None  # 提交完成时随单绑定的处理附件
 
 
 class VerifyIn(BaseModel):

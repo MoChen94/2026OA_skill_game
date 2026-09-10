@@ -288,6 +288,21 @@ def test_files_and_attachments(client):
     names = [f["name"] for f in r.json()["items"]]
     assert "预上传图纸.pdf" in names and all(f["category"] == "ORDER" for f in r.json()["items"])
 
+    # 提交完成时绑定处理附件（complete + draft_file_ids）
+    r = client.post("/api/v1/work-orders", json={
+        "title": "完成附件测试", "assignee_id": 5,
+    }, headers=auth(t_disp))
+    oid3 = r.json()["id"]
+    client.post(f"/api/v1/work-orders/{oid3}/accept", json={}, headers=auth(t_eng3))
+    r = client.post("/api/v1/files", data={"draft": "1"},
+                    files={"file": ("维修后照片.jpg", b"after-bytes", "image/jpeg")}, headers=auth(t_eng3))
+    did = r.json()["id"]
+    r = client.post(f"/api/v1/work-orders/{oid3}/complete",
+                    json={"result": "已修复", "draft_file_ids": [did]}, headers=auth(t_eng3))
+    assert r.status_code == 200 and r.json()["status"] == "PENDING_VERIFY"
+    r = client.get(f"/api/v1/files?order_id={oid3}", headers=auth(t_disp))
+    assert "维修后照片.jpg" in [f["name"] for f in r.json()["items"]]
+
     # 管理员清空全部文件；工程师无权
     r = client.delete("/api/v1/files/all", headers=auth(t_eng))
     assert r.status_code == 403

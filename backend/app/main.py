@@ -63,7 +63,7 @@ async def no_cache_frontend(request, call_next):
     """前端可编辑文件（HTML/JS/CSS）禁用缓存，修改后刷新即生效；vendor 静态库保持缓存。"""
     response = await call_next(request)
     path = request.url.path
-    if path in ("/", "/index.html") or path.startswith(("/js/", "/css/")):
+    if path in ("/", "/index.html") or path.startswith(("/js/", "/css/", "/downloads/")):
         response.headers["Cache-Control"] = "no-cache"
     return response
 

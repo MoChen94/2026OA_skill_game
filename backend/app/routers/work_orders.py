@@ -78,8 +78,11 @@ def list_orders(
 ):
     q = db.query(models.WorkOrder)
     if user.role == models.ROLE_ENGINEER or mine:
+        # 与我相关 = 指派给我 / 我创建 / 我派发（调度员派别人的单也要跟踪反馈）
         q = q.filter(
-            (models.WorkOrder.assignee_id == user.id) | (models.WorkOrder.creator_id == user.id)
+            (models.WorkOrder.assignee_id == user.id)
+            | (models.WorkOrder.creator_id == user.id)
+            | (models.WorkOrder.dispatcher_id == user.id)
         )
     if status:
         q = q.filter(models.WorkOrder.status == status)
@@ -130,8 +133,11 @@ def export_orders(
     """导出工单明细 Excel（与列表同样的筛选条件）。"""
     q = db.query(models.WorkOrder)
     if user.role == models.ROLE_ENGINEER or mine:
+        # 与我相关 = 指派给我 / 我创建 / 我派发（调度员派别人的单也要跟踪反馈）
         q = q.filter(
-            (models.WorkOrder.assignee_id == user.id) | (models.WorkOrder.creator_id == user.id)
+            (models.WorkOrder.assignee_id == user.id)
+            | (models.WorkOrder.creator_id == user.id)
+            | (models.WorkOrder.dispatcher_id == user.id)
         )
     if status:
         q = q.filter(models.WorkOrder.status == status)
@@ -444,6 +450,17 @@ def complete(
     order.finish_time = datetime.now()
     order.status = models.WO_PENDING_VERIFY
     add_log(db, order, user, "COMPLETE", payload.result or "已处理完毕，提交验收")
+
+    # 绑定提交完成时上传的处理附件（仅限本人上传的草稿）
+    if payload.draft_file_ids:
+        drafts = db.query(models.FileRecord).filter(
+            models.FileRecord.id.in_(payload.draft_file_ids),
+            models.FileRecord.category == "DRAFT",
+            models.FileRecord.uploader_id == user.id,
+        ).all()
+        for f in drafts:
+            f.order_id = order.id
+            f.category = "ORDER"
     db.commit()
     notify_and_callback(
         db, order, "completed",

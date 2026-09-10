@@ -301,8 +301,22 @@ const OrdersView = {
       </el-dialog>
 
       <!-- 提交完成 -->
-      <el-dialog v-model="completeDlg" title="提交完成" width="480px">
+      <el-dialog v-model="completeDlg" title="提交完成" width="520px">
         <el-input v-model="completeForm.result" type="textarea" :rows="4" placeholder="填写处理结果、更换的备件、测试情况等"></el-input>
+        <div style="margin-top:12px">
+          <el-button size="small" @click="pickComplete">＋ 上传处理附件（可选）</el-button>
+          <input ref="completeInput" type="file" multiple style="display:none" @change="onCompletePicked">
+          <div v-for="f in completeFiles" :key="f.id" class="draft-file">
+            <span class="draft-name">{{ f.name }}（{{ fmtSize(f.size) }}）</span>
+            <el-button link type="primary" @click="downloadDraft(f)">下载</el-button>
+            <el-button link type="danger" @click="removeDraft(f)">删除</el-button>
+          </div>
+          <div v-if="!completeFiles.length" class="no-perm">可上传处理后的照片/报告等，随提交一并挂到工单，验收时直接查看</div>
+        </div>
+        <div v-if="attachUploading" class="attach-progress" style="margin-top:10px">
+          <div class="up-name">正在上传：{{ attachUploadName }}</div>
+          <el-progress :percentage="attachUploadPct" :stroke-width="12" :text-inside="true" striped striped-flow></el-progress>
+        </div>
         <template #footer>
           <el-button @click="completeDlg = false">取消</el-button>
           <el-button type="primary" :loading="acting" @click="doComplete">提交验收</el-button>
@@ -352,7 +366,7 @@ const OrdersView = {
       createDlg: false, creating: false, draftFiles: [],
       createForm: { title: '', order_type: 'TASK', device_id: null, priority: 'P3', description: '', assignee_id: null },
       dispatchDlg: false, dispatchForm: { assignee_id: null },
-      completeDlg: false, completeForm: { result: '' },
+      completeDlg: false, completeForm: { result: '' }, completeFiles: [],
       verifyDlg: false, verifyForm: { passed: true, comment: '' },
       cancelDlg: false, cancelForm: { reason: '' },
       acting: false,
@@ -593,13 +607,43 @@ const OrdersView = {
       } catch (e) { ElMessage.error(e.message); }
       this.acting = false;
     },
-    openComplete() { this.completeForm.result = ''; this.completeDlg = true; },
+    async loadCompleteDrafts() {
+      try {
+        const d = await API.get('/files?draft=1&page_size=100');
+        this.completeFiles = d.items;
+      } catch (e) {}
+    },
+    pickComplete() { this.$refs.completeInput.value = ''; this.$refs.completeInput.click(); },
+    async onCompletePicked(ev) {
+      const files = Array.from(ev.target.files || []);
+      for (const f of files) {
+        if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+          ElMessage.error(f.name + '：超过单文件上限 ' + MAX_UPLOAD_MB + 'MB');
+          continue;
+        }
+        this.attachUploadName = f.name;
+        this.attachUploadPct = 0;
+        this.attachUploading = true;
+        try {
+          const fd = new FormData();
+          fd.append('draft', '1');
+          fd.append('file', f);
+          await API.upload('/files', fd, (pct) => { this.attachUploadPct = pct; });
+        } catch (e) { ElMessage.error(f.name + '：' + e.message); }
+        this.attachUploading = false;
+      }
+      this.loadCompleteDrafts();
+    },
+    openComplete() { this.completeForm.result = ''; this.completeFiles = []; this.completeDlg = true; this.loadCompleteDrafts(); },
     async doComplete() {
       this.acting = true;
       try {
-        await API.post('/work-orders/' + this.detail.id + '/complete', { result: this.completeForm.result });
+        const body = { result: this.completeForm.result };
+        if (this.completeFiles.length) body.draft_file_ids = this.completeFiles.map(f => f.id);
+        await API.post('/work-orders/' + this.detail.id + '/complete', body);
         ElMessage.success('已提交验收');
         this.completeDlg = false;
+        this.completeFiles = [];
         this.closeAndReload();
       } catch (e) { ElMessage.error(e.message); }
       this.acting = false;

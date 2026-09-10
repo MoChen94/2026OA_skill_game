@@ -4,6 +4,10 @@
 在屏幕右下角弹出置顶提醒卡片：圆角卡片 + 品牌图标 + 倒计时进度条 + 滑入动画，
 带声音、显示在所有窗口之上，任何页面都能看到，不依赖 Windows 通知设置。
 
+v11 改进：
+  - 调度员可跟踪"自己派发"的工单（含他人创建、孪生下发的单）；
+  - 弹窗标题带工程师姓名：如"技术员2 反馈了工单"。
+
 v10 改进：
   - 弹窗可直接点击：点击提醒卡片自动打开浏览器并直达该工单详情页。
 
@@ -40,7 +44,7 @@ import winsound
 from getpass import getpass
 
 POLL_SECONDS = 5
-VERSION = "v10"
+VERSION = "v11"
 POPUP_SECONDS = 8
 
 CONFIG_FILE = "OA助手.ini"
@@ -336,12 +340,12 @@ def manager_transition_msg(old: str, new: str, o: dict):
     if new == "COMPLETED":
         return ("工单验收通过", order + chr(10) + who + " · 该工单已完成")
     if new == "PENDING_VERIFY":
-        return ("工单已提交验收", order + chr(10) + who + " · 请及时验收")
+        return (who + " 反馈了工单", order + chr(10) + who + " · 已提交验收，请及时查验")
     if new == "PROCESSING":
         if old == "PENDING_VERIFY":
             return ("工单验收驳回", order + chr(10) + who + " · 已退回重新处理")
         if old == "PENDING_ACCEPT":
-            return ("工程师已接单", order + chr(10) + who + " · 已开始处理")
+            return (who + " 反馈了工单", order + chr(10) + who + " · 已接单开始处理")
         return None  # 其余进入处理中的路径不提醒
     return None
 
