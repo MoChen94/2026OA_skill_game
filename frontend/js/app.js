@@ -2216,7 +2216,7 @@ const RootApp = {
         <template #footer>
           <el-button @click="notifyDlg = false">知道了</el-button>
           <el-button type="primary" plain tag="a" href="/downloads/桌面提醒助手使用说明.txt" download>使用说明</el-button>
-          <el-button type="primary" tag="a" href="/downloads/OATool-Notifier.exe" download>下载桌面提醒助手（约 7MB）</el-button>
+          <el-button type="primary" tag="a" href="/downloads/OATool-Notifier.exe" download>下载桌面提醒助手（约 10MB）</el-button>
           <el-button type="primary" plain @click="openNotifierCfg">生成免输入配置</el-button>
           <el-button v-if="notifyState !== 'unsupported'" @click="notifyDlg = false; location.reload();">刷新页面</el-button>
         </template>
