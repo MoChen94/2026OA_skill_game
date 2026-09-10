@@ -25,12 +25,13 @@ MODULES = {
     "approvals": "审批中心",
     "files": "文件共享",
     "twin": "孪生对接",
+    "track": "工单跟踪",
     "admin": "权限管理",
 }
 # 各角色创建账号时的默认模块权限（管理员始终拥有全部模块）
 DEFAULT_MODULES = {
     ROLE_ADMIN: list(MODULES.keys()),
-    ROLE_DISPATCHER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files", "twin"],
+    ROLE_DISPATCHER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files", "twin", "track"],
     ROLE_ENGINEER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files"],
 }
 

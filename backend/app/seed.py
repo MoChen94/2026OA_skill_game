@@ -38,9 +38,12 @@ def _migrate(db) -> None:
         mods = [m for m in (u.permissions or "").split(",") if m]
         if "files" not in mods:
             mods.append("files")
-        # 孪生对接仅调度员/管理员默认开通
-        if "twin" not in mods and u.role in (models.ROLE_ADMIN, models.ROLE_DISPATCHER):
-            mods.append("twin")
+        # 孪生对接/工单跟踪 仅调度员/管理员默认开通（工单跟踪也可按需勾给工程师）
+        if u.role in (models.ROLE_ADMIN, models.ROLE_DISPATCHER):
+            if "twin" not in mods:
+                mods.append("twin")
+            if "track" not in mods:
+                mods.append("track")
         u.permissions = ",".join(mods)
     # 老库工单表补 updated_at 列（供孪生增量同步），回填为最后变更时间
     wo_cols = [row[1] for row in db.execute(text("PRAGMA table_info(work_orders)"))]

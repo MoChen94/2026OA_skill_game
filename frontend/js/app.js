@@ -1719,6 +1719,9 @@ const AdminView = {
         { key: 'plans', label: '保养计划' },
         { key: 'announce', label: '公告通知' },
         { key: 'approvals', label: '审批中心' },
+        { key: 'files', label: '文件共享' },
+        { key: 'twin', label: '孪生对接' },
+        { key: 'track', label: '工单跟踪（收到接单/完成等反馈提醒）' },
         { key: 'admin', label: '权限管理' },
       ],
     };
