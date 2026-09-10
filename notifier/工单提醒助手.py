@@ -4,6 +4,10 @@
 在屏幕右下角弹出置顶提醒卡片：圆角卡片 + 品牌图标 + 倒计时进度条 + 滑入动画，
 带声音、显示在所有窗口之上，任何页面都能看到，不依赖 Windows 通知设置。
 
+v13 改进：
+  - 修复：弹窗倒计时自动关闭（及点 ✕ 关闭）时误打开工单详情链接；
+    现在只有点击卡片本体才会跳转。
+
 v12 改进：
   - "接收工单反馈提醒"改为权限控制（OA 权限管理中的「工单跟踪」模块）：
     管理员可勾给任何账号（如 engineer1），勾选后该账号的助手会收到
@@ -50,7 +54,7 @@ import winsound
 from getpass import getpass
 
 POLL_SECONDS = 5
-VERSION = "v12"
+VERSION = "v13"
 POPUP_SECONDS = 8
 
 CONFIG_FILE = "OA助手.ini"
@@ -186,7 +190,15 @@ def popup(title: str, message: str, seconds: int = POPUP_SECONDS, accent: str = 
             root.attributes("-alpha", max(step / 10, 0.0))
             root.after(30, lambda: _fade_out(step - 1))
 
-        def _dismiss(_evt=None) -> None:
+        def _close_only() -> None:
+            """仅关闭弹窗（超时自动关闭 / 点 ✕）：不打开链接。"""
+            if dismissed["v"]:
+                return
+            dismissed["v"] = True
+            _fade_out()
+
+        def _open_link(_evt=None) -> None:
+            """点击卡片：打开工单详情并关闭。"""
             if dismissed["v"]:
                 return
             dismissed["v"] = True
@@ -202,7 +214,7 @@ def popup(title: str, message: str, seconds: int = POPUP_SECONDS, accent: str = 
                 return
             remain = total_ms - (time.time() - start_ts) * 1000
             if remain <= 0:
-                _dismiss()
+                _close_only()
                 return
             w = 14 + (W - 28) * (remain / total_ms)
             cv.coords(bar, 14, H - 5, w, H - 5)
@@ -210,8 +222,8 @@ def popup(title: str, message: str, seconds: int = POPUP_SECONDS, accent: str = 
 
         cv.tag_bind(close_tag, "<Enter>", lambda e: cv.itemconfig(close_tag, fill="#ff7043"))
         cv.tag_bind(close_tag, "<Leave>", lambda e: cv.itemconfig(close_tag, fill=SUB))
-        cv.tag_bind(close_tag, "<Button-1>", _dismiss)
-        root.bind("<Button-1>", _dismiss)
+        cv.tag_bind(close_tag, "<Button-1>", lambda e: (_close_only(), "break")[1])
+        root.bind("<Button-1>", _open_link)
 
         # 滑入 + 淡入动画
         for i in range(11):
