@@ -4,6 +4,11 @@
 在屏幕右下角弹出置顶提醒卡片：圆角卡片 + 品牌图标 + 倒计时进度条 + 滑入动画，
 带声音、显示在所有窗口之上，任何页面都能看到，不依赖 Windows 通知设置。
 
+v14 改进：
+  - 修复间歇性漏提醒：相关工单超过 100 张时旧单会掉出跟踪范围
+    （只拉了第一页），现在自动翻页拉全量；
+  - 登录令牌过期自动重连时明确提示"重建基线，期间变化不再提醒"。
+
 v13 改进：
   - 修复：弹窗倒计时自动关闭（及点 ✕ 关闭）时误打开工单详情链接；
     现在只有点击卡片本体才会跳转。
@@ -54,7 +59,7 @@ import winsound
 from getpass import getpass
 
 POLL_SECONDS = 5
-VERSION = "v13"
+VERSION = "v14"
 POPUP_SECONDS = 8
 
 CONFIG_FILE = "OA助手.ini"
@@ -316,14 +321,26 @@ class OAClient:
             return 0, {"_error": str(e)}
 
     def my_related_orders(self):
-        """与我相关的全部工单（我创建/我指派/派给我），任意状态。管理员视角。"""
-        s, d = self._call("/work-orders?mine=1&page_size=100")
-        if s == 401:
-            self.token = None
-            return None
-        if s != 200:
-            return None
-        return d.get("items", [])
+        """与我相关的全部工单（我创建/我派发/派给我），任意状态，自动翻页取全量。
+
+        旧版只取第一页 100 张：工单累积超 100 后，被顶出首页的在办工单
+        会悄悄失去跟踪（表现为"有时候收不到反馈提醒"）。
+        """
+        items = []
+        page = 1
+        while page <= 50:  # 安全上限 50 页 = 5000 张
+            s, d = self._call(f"/work-orders?mine=1&page_size=100&page={page}")
+            if s == 401:
+                self.token = None
+                return None
+            if s != 200:
+                return None
+            batch = d.get("items", [])
+            items.extend(batch)
+            if len(items) >= d.get("total", 0) or not batch:
+                break
+            page += 1
+        return items
 
     def my_pending_orders(self):
         """派给我且待接单的工单。返回 None 表示需要重新登录或网络异常。"""
@@ -462,10 +479,10 @@ def main() -> None:
                     time.sleep(10)
                     continue
                 related = client.my_related_orders() or []
-                # 重连后避免重复轰炸：重建基线
+                # 重连后避免重复轰炸：重建基线（重连期间发生的变化不再提醒）
                 known_status = {o["id"]: o["status"] for o in related}
                 known_orders = {o["id"] for o in related}
-                print("已重新连接")
+                print("已重新连接（基线已重建，断线期间发生的变化不再提醒）")
             if related is None:
                 # 网络瞬断：保持去重状态，下一轮重试
                 now = time.time()
