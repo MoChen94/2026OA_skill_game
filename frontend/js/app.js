@@ -2109,6 +2109,234 @@ const TwinView = {
   mounted() { this.load(); },
 };
 
+/* ---------------- 在线沟通 ---------------- */
+const ChatView = {
+  name: 'ChatView',
+  props: ['user', 'tick'],
+  template: `
+    <div class="chat-page">
+      <el-card shadow="never" class="panel chat-panel">
+        <div class="chat-wrap">
+          <div class="chat-side">
+            <div class="chat-side-title">成员（{{ members.length }}）</div>
+            <div v-for="m in members" :key="m.id" class="chat-member" :title="'点击 @' + m.real_name" @click="insertMention(m)">
+              <span class="chat-avatar" :class="{ me: m.id === user.id }">{{ m.real_name.charAt(0) }}</span>
+              <span class="chat-member-name">{{ m.real_name }}</span>
+            </div>
+          </div>
+          <div class="chat-main">
+            <div class="chat-head">全员群 · {{ members.length }} 人 <span class="no-perm">点击左侧成员可快速@对方</span></div>
+            <div class="chat-msgs" ref="msgsEl">
+              <div v-if="loading" class="empty-tip">加载中...</div>
+              <div v-if="!loading && !messages.length" class="empty-tip">还没有消息，发一条试试～</div>
+              <template v-for="(m, i) in messages" :key="m.id">
+                <div v-if="showTimeChip(i)" class="chat-time">{{ m.created_at }}</div>
+                <div class="chat-row" :class="{ mine: m.sender_id === user.id }">
+                  <span class="chat-avatar" :class="{ me: m.sender_id === user.id }">{{ m.sender_name.charAt(0) }}</span>
+                  <div class="chat-bubble-box">
+                    <div v-if="m.sender_id !== user.id" class="chat-sender">{{ m.sender_name }}<span v-if="m.at_me" class="chat-atme-tag">[有人@我]</span></div>
+                    <div class="chat-bubble" :class="{ atme: m.at_me && m.sender_id !== user.id }" v-html="renderContent(m)"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <div class="chat-input-area">
+              <div class="chat-mention-pop" v-if="mentionOpen">
+                <div v-for="m in mentionCandidates" :key="m.id" class="chat-mention-item" @mousedown.prevent="chooseMention(m)">
+                  <span class="chat-avatar">{{ m.real_name.charAt(0) }}</span>
+                  <span>{{ m.real_name }}</span><span class="no-perm" style="margin-left:6px">{{ m.title }}</span>
+                </div>
+                <div v-if="!mentionCandidates.length" class="chat-mention-empty">无匹配成员</div>
+              </div>
+              <textarea ref="inputEl" v-model="draft" class="chat-input" rows="3" maxlength="2000"
+                placeholder="输入消息，Enter 发送，Shift+Enter 换行；输入 @ 可提及成员"
+                @input="onInput" @keydown="onKeydown" @blur="onBlur"></textarea>
+              <div class="chat-input-bar">
+                <el-button size="small" @click="insertAt">＠</el-button>
+                <span class="no-perm">{{ draft.length }}/2000</span>
+                <el-button type="primary" size="small" :disabled="!draft.trim() || sending" @click="send">发送</el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </el-card>
+    </div>
+  `,
+  data() {
+    return {
+      members: [], messages: [], draft: '', lastId: 0,
+      loading: false, sending: false,
+      mentionOpen: false, mentionQuery: '', mentionStart: -1,
+      pendingMentions: [],
+      pollTimer: null,
+    };
+  },
+  computed: {
+    memberMap() {
+      const m = {};
+      this.members.forEach(u => { m[u.id] = u; });
+      return m;
+    },
+    mentionCandidates() {
+      if (!this.mentionQuery) return this.members.filter(u => u.id !== this.user.id);
+      const q = this.mentionQuery.toLowerCase();
+      return this.members.filter(u => u.id !== this.user.id && u.real_name.toLowerCase().includes(q));
+    },
+  },
+  methods: {
+    escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+    renderContent(m) {
+      let html = this.escapeHtml(m.content);
+      (m.mentions || []).forEach(id => {
+        const u = this.memberMap[id];
+        if (u) {
+          html = html.split('@' + u.real_name).join('<span class="chat-at">@' + u.real_name + '</span>');
+        }
+      });
+      return html;
+    },
+    showTimeChip(i) {
+      if (i === 0) return true;
+      return this.messages[i].created_at !== this.messages[i - 1].created_at;
+    },
+    async loadMembers() {
+      try { this.members = await API.get('/chat/members'); } catch (e) {}
+    },
+    async loadHistory() {
+      this.loading = true;
+      try {
+        const d = await API.get('/chat/messages?limit=50');
+        d.items.forEach(x => { x.at_me = (x.mentions || []).includes(this.user.id); });
+        this.messages = d.items;
+        this.lastId = d.items.length ? d.items[d.items.length - 1].id : 0;
+      } catch (e) { ElMessage.error(e.message); }
+      this.loading = false;
+      this.$nextTick(() => this.scrollToBottom());
+      this.markRead();
+    },
+    async pollNew() {
+      if (!this.lastId) return;
+      try {
+        const d = await API.get('/chat/messages?after_id=' + this.lastId + '&limit=50');
+        if (d.items.length) {
+          d.items.forEach(m => this.appendMsg(m));
+          if (document.hasFocus()) this.markRead();
+        }
+      } catch (e) {}
+    },
+    appendMsg(m) {
+      if (this.messages.some(x => x.id === m.id)) return;
+      // at_me 统一前端判定（WS 广播无法按接收者分别计算）
+      m.at_me = (m.mentions || []).includes(this.user.id);
+      this.messages.push(m);
+      if (m.id > this.lastId) this.lastId = m.id;
+      this.$nextTick(() => this.scrollToBottom());
+    },
+    async markRead() {
+      if (!this.lastId) return;
+      try { await API.post('/chat/read', { last_read_msg_id: this.lastId }); } catch (e) {}
+    },
+    scrollToBottom() {
+      const el = this.$refs.msgsEl;
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+    onInput() {
+      // 检测光标前的 @xxx 片段（仅末尾）
+      const el = this.$refs.inputEl;
+      const caret = el.selectionStart;
+      const before = this.draft.slice(0, caret);
+      const mch = /@([^@\s]{0,20})$/.exec(before);
+      if (mch) {
+        this.mentionOpen = true;
+        this.mentionQuery = mch[1];
+        this.mentionStart = caret - mch[0].length;
+      } else {
+        this.mentionOpen = false;
+        this.mentionQuery = '';
+      }
+    },
+    onBlur() {
+      setTimeout(() => { this.mentionOpen = false; }, 150);
+    },
+    onKeydown(ev) {
+      if (this.mentionOpen && this.mentionCandidates.length) {
+        if (ev.key === 'Enter' || ev.key === 'Tab') {
+          ev.preventDefault();
+          this.chooseMention(this.mentionCandidates[0]);
+          return;
+        }
+        if (ev.key === 'Escape') {
+          this.mentionOpen = false;
+          return;
+        }
+      }
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        this.send();
+      }
+    },
+    chooseMention(m) {
+      const el = this.$refs.inputEl;
+      const caret = el.selectionStart;
+      const after = this.draft.slice(caret);
+      this.draft = this.draft.slice(0, this.mentionStart) + '@' + m.real_name + ' ' + after;
+      if (!this.pendingMentions.includes(m.id)) this.pendingMentions.push(m.id);
+      this.mentionOpen = false;
+      this.$nextTick(() => {
+        el.focus();
+        const pos = this.mentionStart + m.real_name.length + 2;
+        el.setSelectionRange(pos, pos);
+      });
+    },
+    insertAt() {
+      const el = this.$refs.inputEl;
+      this.draft += '@';
+      this.mentionOpen = true;
+      this.mentionQuery = '';
+      this.mentionStart = this.draft.length - 1;
+      this.$nextTick(() => { el.focus(); el.setSelectionRange(this.draft.length, this.draft.length); });
+    },
+    insertMention(m) {
+      if (m.id === this.user.id) return;
+      this.draft = (this.draft ? this.draft.replace(/\s+$/, '') + ' ' : '') + '@' + m.real_name + ' ';
+      if (!this.pendingMentions.includes(m.id)) this.pendingMentions.push(m.id);
+      this.$nextTick(() => { const el = this.$refs.inputEl; el.focus(); el.setSelectionRange(this.draft.length, this.draft.length); });
+    },
+    async send() {
+      const content = this.draft.trim();
+      if (!content || this.sending) return;
+      this.sending = true;
+      try {
+        const msg = await API.post('/chat/messages', { content: content, mentions: this.pendingMentions });
+        this.appendMsg(msg);
+        this.draft = '';
+        this.pendingMentions = [];
+        this.markRead();
+      } catch (e) { ElMessage.error(e.message); }
+      this.sending = false;
+    },
+    onChatEvent(ev) {
+      const m = ev.detail;
+      if (m && m.sender_id !== this.user.id) {
+        this.appendMsg(m);
+        if (document.hasFocus()) this.markRead();
+      }
+    },
+  },
+  mounted() {
+    this.loadMembers();
+    this.loadHistory();
+    window.addEventListener('chat-msg', this.onChatEvent);
+    this.pollTimer = setInterval(this.pollNew, 5000);
+  },
+  beforeUnmount() {
+    window.removeEventListener('chat-msg', this.onChatEvent);
+    if (this.pollTimer) clearInterval(this.pollTimer);
+  },
+};
+
 /* ---------------- 根应用 ---------------- */
 const RootApp = {
   components: {
@@ -2122,6 +2350,7 @@ const RootApp = {
     'approvals-view': ApprovalsView,
     'files-view': FilesView,
     'twin-view': TwinView,
+    'chat-view': ChatView,
     'admin-view': AdminView,
   },
   template: `
@@ -2166,6 +2395,7 @@ const RootApp = {
             <el-menu-item v-if="canView('approvals')" index="approvals"><span class="menu-ico">✅</span><span>审批中心</span></el-menu-item>
             <el-menu-item v-if="canView('files')" index="files"><span class="menu-ico">📁</span><span>文件共享</span></el-menu-item>
             <el-menu-item v-if="canView('twin')" index="twin"><span class="menu-ico">🔗</span><span>孪生对接</span></el-menu-item>
+            <el-menu-item v-if="canView('chat')" index="chat"><span class="menu-ico">💬</span><span>在线沟通</span><span v-if="chatUnread && view !== 'chat'" class="menu-unread">{{ chatUnread > 99 ? '99+' : chatUnread }}</span></el-menu-item>
             <el-menu-item v-if="user.role !== 'ENGINEER'" index="screen"><span class="menu-ico">🖥️</span><span>大屏看板</span></el-menu-item>
             <el-menu-item v-if="user.role === 'ADMIN'" index="admin"><span class="menu-ico">🔐</span><span>权限管理</span></el-menu-item>
           </el-menu>
@@ -2253,7 +2483,7 @@ const RootApp = {
     return {
       user: null,
       view: 'dashboard',
-      pageTitles: { dashboard: '工作台', orders: '工单管理', repairs: '报修管理', reports: '报表中心', devices: '设备台账', plans: '保养计划', announce: '公告通知', approvals: '审批中心', files: '文件共享', twin: '孪生对接', admin: '权限管理' },
+      pageTitles: { dashboard: '工作台', orders: '工单管理', repairs: '报修管理', reports: '报表中心', devices: '设备台账', plans: '保养计划', announce: '公告通知', approvals: '审批中心', files: '文件共享', twin: '孪生对接', chat: '在线沟通', admin: '权限管理' },
       loginForm: { username: '', password: '' },
       loginLoading: false,
       ws: null, wsConnected: false, wsTick: 0,
@@ -2263,6 +2493,7 @@ const RootApp = {
       pwdForm: { old_password: '', new_password: '', confirm: '' },
       notifyState: 'unknown', notifyDlg: false,
       linkedOrderId: null, pendingOrderFromUrl: null,
+      chatUnread: 0, chatTimer: null,
       cfgDlg: false, cfgPassword: '',
     };
   },
@@ -2361,6 +2592,14 @@ const RootApp = {
       this.ws.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
+          if (data.event === 'chat') {
+            if (this.view === 'chat') {
+              window.dispatchEvent(new CustomEvent('chat-msg', { detail: data.chat }));
+            } else {
+              this.chatUnread++;
+            }
+            return;
+          }
           ElNotification({
             title: '工单提醒',
             message: data.message || '有新动态',
@@ -2389,11 +2628,20 @@ const RootApp = {
       };
     },
     changeView(v) {
+      if (v === 'chat') this.chatUnread = 0;
       if (v === 'screen') { window.open('/screen.html', '_blank'); return; }
       this.view = v;
     },
     canView(module) {
       return this.user && (this.user.role === 'ADMIN' || (this.user.permissions || []).includes(module));
+    },
+    async refreshChatUnread() {
+      if (!this.user) return;
+      if (this.view === 'chat') { this.chatUnread = 0; return; }
+      try {
+        const d = await API.get('/chat/unread');
+        this.chatUnread = d.unread;
+      } catch (e) {}
     },
     async refreshUnread() {
       if (!this.user) return;
@@ -2463,11 +2711,14 @@ const RootApp = {
     window.addEventListener('focus', this.refreshNotifyState);
     this.tryRestore();
     this.unreadTimer = setInterval(this.refreshUnread, 60000);
+    this.chatTimer = setInterval(this.refreshChatUnread, 30000);
+    setTimeout(this.refreshChatUnread, 2000);
     setTimeout(this.refreshUnread, 2000);
   },
   beforeUnmount() {
     if (this.clockTimer) clearInterval(this.clockTimer);
     if (this.unreadTimer) clearInterval(this.unreadTimer);
+    if (this.chatTimer) clearInterval(this.chatTimer);
     window.removeEventListener('oatool-401', this.on401);
     window.removeEventListener('focus', this.refreshNotifyState);
   },

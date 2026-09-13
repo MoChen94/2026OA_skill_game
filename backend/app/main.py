@@ -18,6 +18,7 @@ from .routers import (
     announcements,
     approvals,
     auth,
+    chat,
     dashboard,
     devices,
     files,
@@ -96,6 +97,7 @@ app.include_router(screen.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
 app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(files.router, prefix="/api/v1")
+app.include_router(chat.router, prefix="/api/v1")
 app.include_router(twin.router, prefix="/api/v1")
 app.include_router(ws.router, prefix="/api/v1")
 

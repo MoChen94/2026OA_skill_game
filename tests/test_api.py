@@ -191,7 +191,7 @@ def test_permissions_and_modules(client):
     client.put(f"/api/v1/users/{e2['id']}", json={
         "real_name": e2["real_name"], "title": e2["title"], "role": "ENGINEER",
         "enabled": True,
-        "permissions": ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files"],
+        "permissions": ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files", "chat"],
     }, headers=auth(t_admin))
 
 
@@ -449,3 +449,47 @@ def test_clear_all_orders_and_devices(client):
     assert r.status_code == 200 and r.json()["deleted"] > 0
     r = client.get("/api/v1/devices", headers=auth(t_admin))
     assert r.json() == []
+
+
+def test_chat(client):
+    """在线沟通（全员群）：发送/@提及/未读/已读/权限。"""
+    t_admin = login(client)
+    t_eng = login(client, "engineer2")
+    t_eng3 = login(client, "engineer3")
+
+    # 成员列表包含全员
+    r = client.get("/api/v1/chat/members", headers=auth(t_eng))
+    assert r.status_code == 200
+    names = [u["real_name"] for u in r.json()]
+    assert "技术员2" in names and "系统管理员" in names
+
+    # engineer2 发消息并 @技术员3（假 @ 管理员，名字不在内容里应被过滤）
+    r = client.post("/api/v1/chat/messages", json={
+        "content": "巡检注意安全 @技术员3", "mentions": [5, 1],
+    }, headers=auth(t_eng))
+    assert r.status_code == 200
+    msg = r.json()
+    assert msg["sender_name"] == "技术员2"
+    assert msg["mentions"] == [5]          # @系统管理员 因名字未出现被过滤
+    mid = msg["id"]
+
+    # 技术员3 视角：at_me=True；未读>=1
+    r = client.get("/api/v1/chat/messages?limit=10", headers=auth(t_eng3))
+    mine = [m for m in r.json()["items"] if m["id"] == mid][0]
+    assert mine["at_me"] is True
+    r = client.get("/api/v1/chat/unread", headers=auth(t_eng3))
+    assert r.json()["unread"] >= 1
+
+    # 增量拉取
+    r = client.get(f"/api/v1/chat/messages?after_id={mid - 1}", headers=auth(t_eng3))
+    assert any(m["id"] == mid for m in r.json()["items"])
+
+    # 标记已读后未读归零
+    r = client.post("/api/v1/chat/read", json={"last_read_msg_id": mid}, headers=auth(t_eng3))
+    assert r.status_code == 200
+    r = client.get("/api/v1/chat/unread", headers=auth(t_eng3))
+    assert r.json()["unread"] == 0
+
+    # 空内容拒绝
+    r = client.post("/api/v1/chat/messages", json={"content": "   "}, headers=auth(t_eng))
+    assert r.status_code == 422 or r.status_code == 400

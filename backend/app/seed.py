@@ -38,6 +38,8 @@ def _migrate(db) -> None:
         mods = [m for m in (u.permissions or "").split(",") if m]
         if "files" not in mods:
             mods.append("files")
+        if "chat" not in mods:
+            mods.append("chat")
         # 孪生对接/工单跟踪 仅调度员/管理员默认开通（工单跟踪也可按需勾给工程师）
         if u.role in (models.ROLE_ADMIN, models.ROLE_DISPATCHER):
             if "twin" not in mods:

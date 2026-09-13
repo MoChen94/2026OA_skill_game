@@ -26,13 +26,14 @@ MODULES = {
     "files": "文件共享",
     "twin": "孪生对接",
     "track": "工单跟踪",
+    "chat": "在线沟通",
     "admin": "权限管理",
 }
 # 各角色创建账号时的默认模块权限（管理员始终拥有全部模块）
 DEFAULT_MODULES = {
     ROLE_ADMIN: list(MODULES.keys()),
-    ROLE_DISPATCHER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files", "twin", "track"],
-    ROLE_ENGINEER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files"],
+    ROLE_DISPATCHER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files", "twin", "track", "chat"],
+    ROLE_ENGINEER: ["dashboard", "orders", "repairs", "reports", "devices", "plans", "announce", "approvals", "files", "chat"],
 }
 
 # ---------- 工单状态机 ----------
@@ -330,6 +331,28 @@ class SystemConfig(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ChatMessage(Base):
+    """在线沟通（全员群）消息：纯文字 + @提及。"""
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    mentions: Mapped[str] = mapped_column(Text, default="")  # 被@的用户ID，逗号分隔
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+    sender: Mapped[Optional["User"]] = relationship()
+
+
+class ChatRead(Base):
+    """在线沟通已读水位：每人读到的最大消息ID。"""
+    __tablename__ = "chat_reads"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    last_read_msg_id: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
