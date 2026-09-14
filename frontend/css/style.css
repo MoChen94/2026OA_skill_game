@@ -78,10 +78,17 @@ body {
 .logo-sub { color: #6d84a0; font-size: 11px; margin-top: 2px; }
 .sidebar-menu {
   flex: 1;
+  min-height: 0;          /* 允许菜单收缩，让底部账号区固定 */
+  overflow-y: auto;       /* 菜单过多时菜单区内部滚动 */
   border-right: none;
   background: transparent;
   padding-top: 8px;
+  scrollbar-width: thin;  /* 深色细滚动条 */
+  scrollbar-color: #2a4a6e transparent;
 }
+.sidebar-menu::-webkit-scrollbar { width: 5px; }
+.sidebar-menu::-webkit-scrollbar-thumb { background: #2a4a6e; border-radius: 3px; }
+.sidebar-menu::-webkit-scrollbar-track { background: transparent; }
 .sidebar-menu .el-menu-item {
   color: #9db1c9;
   height: 46px;
@@ -96,6 +103,7 @@ body {
 }
 .menu-ico { margin-right: 8px; }
 .sidebar-user {
+  flex-shrink: 0;         /* 账号区固定底部，永不挤出 */
   display: flex;
   align-items: center;
   gap: 10px;
