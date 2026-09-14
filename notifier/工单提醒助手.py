@@ -325,13 +325,13 @@ class OAClient:
             return []
         return [o for o in items if o.get("assignee_id") == self.user_id]
 
-    def _call(self, path):
+    def _call(self, path, http_timeout: int = 8):
         req = urllib.request.Request(self.base + path)
         req.add_header("Content-Type", "application/json")
         if self.token:
             req.add_header("Authorization", "Bearer " + self.token)
         try:
-            with self.opener.open(req, timeout=8) as r:
+            with self.opener.open(req, timeout=http_timeout) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             try:
@@ -364,15 +364,23 @@ class OAClient:
         return items
 
     def wait_changes(self, version: int, timeout: int = 15):
-        """长轮询：工单有变化立即返回 (changed, 新version)；超时/出错返回 (False, version)。"""
+        """长轮询：工单有变化立即返回 (changed, 新version)；超时/出错返回 (False, version)。
+
+        失败（含旧版服务器无此接口 404）时休眠 5 秒降级为定时轮询，
+        防止无延时重试形成疯狂请求死循环拖垮服务器。
+        """
         try:
-            s, d = self._call(f"/work-orders/wait-changes?version={version}&timeout={timeout}")
+            s, d = self._call(
+                f"/work-orders/wait-changes?version={version}&timeout={timeout}",
+                http_timeout=timeout + 8,  # 客户端超时须大于服务端挂起时长
+            )
             if s == 200:
                 return bool(d.get("changed")), int(d.get("version", version))
             if s == 401:
                 self.token = None
         except Exception:
             pass
+        time.sleep(POLL_SECONDS)  # 失败降级：退回 5 秒轮询节奏
         return False, version
 
     def my_pending_orders(self):
