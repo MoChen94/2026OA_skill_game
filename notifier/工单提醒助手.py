@@ -4,6 +4,13 @@
 在屏幕右下角弹出置顶提醒卡片：圆角卡片 + 品牌图标 + 倒计时进度条 + 滑入动画，
 带声音、显示在所有窗口之上，任何页面都能看到，不依赖 Windows 通知设置。
 
+v16 改进：
+  - 断电重启自愈：开机时服务器尚未就绪（客户端先于服务器启动）不再
+    一次失败即退出，改为每 5 秒自动重试直到连上；账号密码错误才转
+    交互式重新输入。彻底消除"来电后助手没在监听"的问题；
+  - 开机追赶播报：启动时若最近 30 分钟内有相关工单更新，弹一条
+    汇总卡片（避免恢复间隙的反馈无声无息）。
+
 v15 改进：
   - 长轮询提速：工单流转（派单/接单/反馈/验收/取消）后亚秒级弹窗，
     替代旧的 5 秒定时轮询；无变化时 15 秒自动重连，断线自动回退重试。
@@ -63,7 +70,7 @@ import winsound
 from getpass import getpass
 
 POLL_SECONDS = 5
-VERSION = "v15"
+VERSION = "v16"
 POPUP_SECONDS = 8
 
 CONFIG_FILE = "OA助手.ini"
@@ -269,6 +276,8 @@ class OAClient:
         self.user_id = None
 
     def login(self) -> bool:
+        """登录。失败类型记录在 self.login_error：auth=账号密码问题 / network=服务器未就绪。"""
+        self.login_error = ""
         data = json.dumps({"username": self.username, "password": self.password}).encode("utf-8")
         req = urllib.request.Request(self.base + "/auth/login", data=data, method="POST")
         req.add_header("Content-Type", "application/json")
@@ -282,9 +291,11 @@ class OAClient:
                 detail = json.loads(e.read()).get("detail", "登录失败")
             except Exception:
                 detail = "登录失败"
+            self.login_error = "auth" if e.code in (400, 401, 403, 422, 423) else "network"
             print("登录失败：", detail)
             return False
         except Exception as e:
+            self.login_error = "network"
             print("无法连接服务器：", e)
             return False
 
@@ -437,24 +448,44 @@ def main() -> None:
     if SERVER_ROOT.endswith("/api/v1"):
         SERVER_ROOT = SERVER_ROOT[:-7]
     client = OAClient(base, username, password) if base else None
-    logged = client.login() if client is not None else False
-    if not logged:
-        if client is not None:
-            print("自动登录失败，请重新输入服务器地址、账号、密码：")
+    # 开机自愈登录：服务器未就绪时每 5 秒自动重试（断电重启后客户端常先于服务器启动）；
+    # 仅账号密码连续错误时才转交互式重新输入。
+    if client is None:
         base = input("服务器地址（如 http://192.168.1.100:8001）：").strip() or "http://127.0.0.1:8001"
         username = input("登录账号：").strip()
         password = getpass("密码：")
         client = OAClient(base, username, password)
-        if not client.login():
-            input("按回车退出...")
-            return
+        cfg_source = "input"
+
+    auth_fails = 0
+    net_tries = 0
+    while not client.login():
+        if client.login_error == "auth":
+            auth_fails += 1
+            if auth_fails >= 3:
+                print("账号或密码连续错误，请重新输入（旧配置已清除）：")
+                clear_config()
+                base = input("服务器地址（如 http://192.168.1.100:8001）：").strip() or "http://127.0.0.1:8001"
+                username = input("登录账号：").strip()
+                password = getpass("密码：")
+                client = OAClient(base, username, password)
+                auth_fails = 0
+                cfg_source = "input"
+            else:
+                print("10 秒后重试…")
+                time.sleep(10)
+        else:
+            net_tries += 1
+            if net_tries == 1 or net_tries % 12 == 0:
+                print("等待服务器就绪（开机启动中或网络未恢复），每 5 秒自动重试，无需人工操作…")
+            time.sleep(5)
+    if net_tries:
+        print(f"服务器已就绪，重试 {net_tries} 次后自动连上（开机自愈生效）")
+    if cfg_source == "cli" or cfg_source == "input":
         save_config(base, username, password)
         print("登录成功，配置已记忆：以后双击 exe 即可直接使用")
-    elif cfg_source == "config":
-        print(f"已自动登录：{username}（使用记忆的配置，换账号请运行 exe --reset）")
     else:
-        save_config(base, username, password)
-        print(f"已登录：{username}（配置已记忆，以后双击 exe 即可直接使用）")
+        print(f"已自动登录：{username}（使用记忆的配置，换账号请运行 exe --reset）")
 
     info = client.me()
     # 反馈提醒（接单/完成/验收/取消）：管理员、调度员默认开通；
@@ -477,6 +508,26 @@ def main() -> None:
     if first_related is not None:
         known_status = {o["id"]: o["status"] for o in first_related}
         known_orders = {o["id"] for o in first_related}
+        # 开机追赶播报：断电重启恢复间隙里发生的变化，弹一条汇总（只播一次，不逐条轰炸）
+        try:
+            from datetime import datetime, timedelta
+            cutoff = datetime.now() - timedelta(minutes=30)
+            recent = [
+                o for o in first_related
+                if o.get("updated_at") and datetime.fromisoformat(o["updated_at"]) >= cutoff
+            ]
+            if recent:
+                NL = chr(10)
+                lines = [f"{o['order_no']} {o['title'][:16]}（{o['status_label']}）" for o in recent[:5]]
+                more = (NL + f"…等共 {len(recent)} 张") if len(recent) > 5 else ""
+                popup(
+                    "开机动态汇总",
+                    "最近 30 分钟内与您相关的工单有更新：" + NL + NL.join(lines) + more,
+                    accent="#9c6ade",
+                )
+                print(f"[开机动态汇总] 最近30分钟 {len(recent)} 张相关工单有更新")
+        except Exception:
+            pass
     if track_enabled:
         print(f"工单跟踪已开启：正在跟踪与您相关的 {len(known_status)} 张工单")
         print("工程师接单 / 反馈工单 / 验收通过 / 驳回 / 取消 时会弹窗提醒（启动前的状态不再提醒）")
