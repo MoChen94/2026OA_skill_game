@@ -4,6 +4,10 @@
 在屏幕右下角弹出置顶提醒卡片：圆角卡片 + 品牌图标 + 倒计时进度条 + 滑入动画，
 带声音、显示在所有窗口之上，任何页面都能看到，不依赖 Windows 通知设置。
 
+v15 改进：
+  - 长轮询提速：工单流转（派单/接单/反馈/验收/取消）后亚秒级弹窗，
+    替代旧的 5 秒定时轮询；无变化时 15 秒自动重连，断线自动回退重试。
+
 v14 改进：
   - 修复间歇性漏提醒：相关工单超过 100 张时旧单会掉出跟踪范围
     （只拉了第一页），现在自动翻页拉全量；
@@ -59,7 +63,7 @@ import winsound
 from getpass import getpass
 
 POLL_SECONDS = 5
-VERSION = "v14"
+VERSION = "v15"
 POPUP_SECONDS = 8
 
 CONFIG_FILE = "OA助手.ini"
@@ -342,6 +346,18 @@ class OAClient:
             page += 1
         return items
 
+    def wait_changes(self, version: int, timeout: int = 15):
+        """长轮询：工单有变化立即返回 (changed, 新version)；超时/出错返回 (False, version)。"""
+        try:
+            s, d = self._call(f"/work-orders/wait-changes?version={version}&timeout={timeout}")
+            if s == 200:
+                return bool(d.get("changed")), int(d.get("version", version))
+            if s == 401:
+                self.token = None
+        except Exception:
+            pass
+        return False, version
+
     def my_pending_orders(self):
         """派给我且待接单的工单。返回 None 表示需要重新登录或网络异常。"""
         s, d = self._call("/work-orders?status=PENDING_ACCEPT&mine=1&page_size=100")
@@ -468,75 +484,90 @@ def main() -> None:
 
     last_err_ts = 0.0
     last_beat_ts = 0.0
+    wait_version = 0
+
+    def fetch_and_alert() -> bool:
+        """拉取全量相关工单并弹窗。返回是否成功。"""
+        nonlocal last_err_ts, last_beat_ts
+        related = client.my_related_orders()
+        if related is None and client.token is None:
+            print(time.strftime("%H:%M:%S"), "登录失效，自动重新登录...")
+            if not client.login():
+                print("重新登录失败，10 秒后重试")
+                time.sleep(10)
+                return False
+            related = client.my_related_orders() or []
+            # 重连后避免重复轰炸：重建基线（重连期间发生的变化不再提醒）
+            known_status.clear()
+            known_status.update({o["id"]: o["status"] for o in related})
+            known_orders.clear()
+            known_orders.update({o["id"] for o in related})
+            print("已重新连接（基线已重建，断线期间发生的变化不再提醒）")
+        if related is None:
+            return False
+
+        cur = {o["id"]: o for o in related}
+        events = []
+        # 事件一：派给我的新工单（任何账号，待接单状态）
+        for o in cur.values():
+                if (o["status"] == "PENDING_ACCEPT"
+                        and o.get("assignee_id") == client.user_id
+                        and o["id"] not in known_orders):
+                    events.append(("new", o))
+        # 事件二：相关工单的状态反馈（需 track 权限或管理角色）
+        if track_enabled:
+            for oid, o in cur.items():
+                old_st = known_status.get(oid)
+                if old_st is not None and old_st != o["status"]:
+                    msg = manager_transition_msg(old_st, o["status"], o)
+                    if msg:
+                        events.append(("feedback", msg[0], msg[1], o["status"], oid, o["order_no"]))
+        # 先更新基线再弹窗：弹窗阻塞期间到达的新状态下一轮仍能检出
+        known_status.clear()
+        known_status.update({oid: o["status"] for oid, o in cur.items()})
+        known_orders.update(set(cur.keys()))
+        for ev in events:
+            if ev[0] == "new":
+                o = ev[1]
+                notify(
+                    "收到新工单",
+                    f"{o['order_no']}  {o['title']}" + chr(10) + f"优先级：{o['priority_label']} · 点击卡片可直接查看工单",
+                    order_id=o["id"],
+                )
+                print(time.strftime("%H:%M:%S"), "[新工单]", o["order_no"], o["title"])
+            else:
+                _, title, body, new_st, oid, order_no = ev
+                accent = "#67c23a" if new_st == "COMPLETED" else "#2f8bff"
+                print(time.strftime("%H:%M:%S"), "[弹窗]", title, order_no)
+                popup(title, body, accent=accent, url=order_link(oid))
+
+        now = time.time()
+        if now - last_beat_ts > 60:
+            pending_n = sum(1 for s in known_status.values() if s == "PENDING_ACCEPT")
+            print(time.strftime("%H:%M:%S"), f"监听中：相关工单 {len(known_status)} 张 / 待接单 {pending_n} 张（长轮询模式，流转即时提醒）")
+            last_beat_ts = now
+        return True
 
     while True:
         try:
-            related = client.my_related_orders()
-            if related is None and client.token is None:
-                print(time.strftime("%H:%M:%S"), "登录失效，自动重新登录...")
-                if not client.login():
-                    print("重新登录失败，10 秒后重试")
-                    time.sleep(10)
-                    continue
-                related = client.my_related_orders() or []
-                # 重连后避免重复轰炸：重建基线（重连期间发生的变化不再提醒）
-                known_status = {o["id"]: o["status"] for o in related}
-                known_orders = {o["id"] for o in related}
-                print("已重新连接（基线已重建，断线期间发生的变化不再提醒）")
-            if related is None:
-                # 网络瞬断：保持去重状态，下一轮重试
+            ok = fetch_and_alert()
+            if not ok:
                 now = time.time()
                 if now - last_err_ts > 60:
                     print(time.strftime("%H:%M:%S"), "连接服务器失败，自动重试中...")
                     last_err_ts = now
                 time.sleep(POLL_SECONDS)
                 continue
-
-            cur = {o["id"]: o for o in related}
-            events = []
-            # 事件一：派给我的新工单（任何账号，待接单状态）
-            for o in cur.values():
-                if (o["status"] == "PENDING_ACCEPT"
-                        and o.get("assignee_id") == client.user_id
-                        and o["id"] not in known_orders):
-                    events.append(("new", o))
-            # 事件二：相关工单的状态反馈（需 track 权限或管理角色）
-            if track_enabled:
-                for oid, o in cur.items():
-                    old_st = known_status.get(oid)
-                    if old_st is not None and old_st != o["status"]:
-                        msg = manager_transition_msg(old_st, o["status"], o)
-                        if msg:
-                            events.append(("feedback", msg[0], msg[1], o["status"], oid, o["order_no"]))
-            # 先更新基线再弹窗：弹窗阻塞期间到达的新状态下一轮仍能检出
-            known_status = {oid: o["status"] for oid, o in cur.items()}
-            known_orders |= set(cur.keys())
-            for ev in events:
-                if ev[0] == "new":
-                    o = ev[1]
-                    notify(
-                        "收到新工单",
-                        f"{o['order_no']}  {o['title']}" + chr(10) + f"优先级：{o['priority_label']} · 点击卡片可直接查看工单",
-                        order_id=o["id"],
-                    )
-                    print(time.strftime("%H:%M:%S"), "[新工单]", o["order_no"], o["title"])
-                else:
-                    _, title, body, new_st, oid, order_no = ev
-                    accent = "#67c23a" if new_st == "COMPLETED" else "#2f8bff"
-                    popup(title, body, accent=accent, url=order_link(oid))
-                    print(time.strftime("%H:%M:%S"), f"[{title}]", order_no)
-
-            now = time.time()
-            if now - last_beat_ts > 60:
-                pending_n = sum(1 for s in known_status.values() if s == "PENDING_ACCEPT")
-                print(time.strftime("%H:%M:%S"), f"监听中：相关工单 {len(known_status)} 张 / 待接单 {pending_n} 张")
-                last_beat_ts = now
+            # 长轮询挂起等待：工单流转亚秒级唤醒，超时 15 秒做一次兜底全量拉取
+            changed, wait_version = client.wait_changes(wait_version, timeout=15)
+            if changed:
+                fetch_and_alert()
         except KeyboardInterrupt:
             print("\n提醒助手已退出")
             return
         except Exception as e:
             print(time.strftime("%H:%M:%S"), "异常：", e)
-        time.sleep(POLL_SECONDS)
+            time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":

@@ -120,6 +120,9 @@ def notify_and_callback(
     if ids:
         push(ids, payload)
 
+    from .events_bus import bus
+    bus.ping()  # 唤醒长轮询的桌面助手（亚秒级弹窗）
+
     twin_callback(db, order, event)
 
 

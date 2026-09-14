@@ -121,6 +121,35 @@ def clear_all_orders(
     db.commit()
     return {"ok": True, "deleted_orders": n_orders, "deleted_repairs": n_rr, "deleted_files": len(files)}
 
+    from ..events_bus import bus
+    bus.ping()
+
+
+@router.get("/wait-changes")
+def wait_changes(
+    version: int = Query(default=0, description="上次拿到的版本号"),
+    timeout: int = Query(default=15, ge=1, le=30, description="最多挂起秒数"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_module("orders")),
+):
+    """长轮询：工单有任何流转立即返回（changed=True），超时返回 changed=False。
+
+    桌面助手用它替代定时轮询：事件触发亚秒级唤醒，无变化时 15 秒自动返回重连。
+    """
+    from ..events_bus import bus
+    import time as _time
+
+    end = _time.monotonic() + timeout
+    v = version
+    while True:
+        remaining = end - _time.monotonic()
+        if remaining <= 0:
+            break
+        v = bus.wait(v, remaining)
+        if v != version:
+            break
+    return {"version": v, "changed": v != version}
+
 
 @router.get("/export")
 def export_orders(
