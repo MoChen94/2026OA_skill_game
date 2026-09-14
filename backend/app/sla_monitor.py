@@ -13,19 +13,24 @@ SCAN_INTERVAL_SECONDS = 60
 FIRST_SCAN_DELAY_SECONDS = 5  # 启动后先扫一次，便于演示
 
 
+def _scan_job() -> None:
+    db = SessionLocal()
+    try:
+        scan_due_plans(db)
+    finally:
+        db.close()
+
+
 async def background_loop() -> None:
     await asyncio.sleep(FIRST_SCAN_DELAY_SECONDS)
     while True:
+        # 数据库操作放线程执行：任何 DB 阻塞（锁/磁盘慢）都不会冻结事件循环
         try:
-            db = SessionLocal()
-            try:
-                scan_due_plans(db)
-            finally:
-                db.close()
+            await asyncio.to_thread(_scan_job)
         except Exception:
             pass
         try:
-            _daily_backup()
+            await asyncio.to_thread(_daily_backup)
         except Exception:
             pass
         await asyncio.sleep(SCAN_INTERVAL_SECONDS)

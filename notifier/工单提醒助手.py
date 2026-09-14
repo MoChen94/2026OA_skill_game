@@ -267,6 +267,11 @@ def notify(title: str, message: str, order_id=None) -> None:
     popup(title, message, accent="#2f8bff", url=order_link(order_id))
 
 
+# 无代理 opener：客户端只访问局域网服务器，必须绕过系统代理
+# （Clash 等代理软件开启时会劫持 127.0.0.1/局域网请求导致连接失败）
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 class OAClient:
     def __init__(self, base: str, username: str, password: str):
         self.base = base.rstrip("/") + "/api/v1"
@@ -274,6 +279,7 @@ class OAClient:
         self.password = password
         self.token = None
         self.user_id = None
+        self.opener = _NO_PROXY_OPENER
 
     def login(self) -> bool:
         """登录。失败类型记录在 self.login_error：auth=账号密码问题 / network=服务器未就绪。"""
@@ -282,7 +288,7 @@ class OAClient:
         req = urllib.request.Request(self.base + "/auth/login", data=data, method="POST")
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with self.opener.open(req, timeout=8) as r:
                 d = json.loads(r.read())
                 self.token = d["token"]
                 return True
@@ -325,7 +331,7 @@ class OAClient:
         if self.token:
             req.add_header("Authorization", "Bearer " + self.token)
         try:
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with self.opener.open(req, timeout=8) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             try:
@@ -488,6 +494,11 @@ def main() -> None:
         print(f"已自动登录：{username}（使用记忆的配置，换账号请运行 exe --reset）")
 
     info = client.me()
+    while info is None:
+        # me() 失败会导致 user_id 为空 → 新工单/反馈提醒全部静默失效，必须重试到成功
+        print("获取账号信息失败，5 秒后自动重试…")
+        time.sleep(5)
+        info = client.me()
     # 反馈提醒（接单/完成/验收/取消）：管理员、调度员默认开通；
     # 其他账号由 OA「权限管理」中的「工单跟踪」模块控制
     perms = (info or {}).get("permissions") or []
