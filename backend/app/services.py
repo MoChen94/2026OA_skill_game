@@ -11,6 +11,7 @@ from .ws_manager import push
 
 
 def gen_order_no(db: Session) -> str:
+    """并发生成时 count+1 可能撞号（唯一约束冲突→500），已占用则顺延取号。"""
     date = datetime.now().strftime("%Y%m%d")
     prefix = f"WO{date}-"
     count = (
@@ -18,7 +19,10 @@ def gen_order_no(db: Session) -> str:
         .filter(models.WorkOrder.order_no.like(f"{prefix}%"))
         .count()
     )
-    return f"{prefix}{count + 1:03d}"
+    n = count + 1
+    while db.query(models.WorkOrder.id).filter(models.WorkOrder.order_no == f"{prefix}{n:03d}").first():
+        n += 1
+    return f"{prefix}{n:03d}"
 
 
 def gen_request_no(db: Session) -> str:
@@ -29,7 +33,10 @@ def gen_request_no(db: Session) -> str:
         .filter(models.RepairRequest.request_no.like(f"{prefix}%"))
         .count()
     )
-    return f"{prefix}{count + 1:03d}"
+    n = count + 1
+    while db.query(models.RepairRequest.id).filter(models.RepairRequest.request_no == f"{prefix}{n:03d}").first():
+        n += 1
+    return f"{prefix}{n:03d}"
 
 
 def notify_users(
