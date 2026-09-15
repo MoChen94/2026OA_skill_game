@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     # 长轮询会占用线程池线程，扩容默认限制（40 -> 120）保障并发
     import anyio.to_thread
     anyio.to_thread.current_default_thread_limiter().total_tokens = 120
-    ensure_seed()
+    await asyncio.to_thread(ensure_seed)  # 启动初始化含DB操作，同样不占事件循环
     monitor = asyncio.create_task(background_loop())
     yield
     monitor.cancel()

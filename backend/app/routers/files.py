@@ -6,6 +6,7 @@
 
 文件实体存磁盘 data/uploads/（uuid 文件名），数据库只保存元数据。
 """
+import asyncio
 import uuid
 from pathlib import Path
 
@@ -101,7 +102,8 @@ async def upload_file(
                 size += len(chunk)
                 if size > _MAX_BYTES:
                     raise HTTPException(413, f"文件超过 {config.MAX_UPLOAD_MB}MB 大小限制")
-                out.write(chunk)
+                # 磁盘写入放线程：大文件上传期间的写盘不再阻塞事件循环（否则全站卡顿）
+                await asyncio.to_thread(out.write, chunk)
     except HTTPException:
         dest.unlink(missing_ok=True)
         raise
