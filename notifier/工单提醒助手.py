@@ -1,8 +1,14 @@
-"""OA协同办公助手 v8（置顶弹窗提醒）
+"""OA协同办公助手 v17（置顶弹窗提醒）
 
 功能：工程师端运行后最小化即可。轮询 OA 服务器，发现派给自己的新工单时，
 在屏幕右下角弹出置顶提醒卡片：圆角卡片 + 品牌图标 + 倒计时进度条 + 滑入动画，
 带声音、显示在所有窗口之上，任何页面都能看到，不依赖 Windows 通知设置。
+
+v17 改进：
+  - 断线看得见：与服务器断线持续超 15 秒，弹灰色提示卡"连接已断开，
+    自动重连中"；重连成功后弹绿色卡片"连接已恢复"并注明断线时长，
+    断线期间的新工单/反馈会立即补提醒。路由器断电恢复后无需再猜
+    助手死活——每台电脑一眼可见。短于 15 秒的网络抖动只记控制台不弹卡。
 
 v16 改进：
   - 断电重启自愈：开机时服务器尚未就绪（客户端先于服务器启动）不再
@@ -70,7 +76,7 @@ import winsound
 from getpass import getpass
 
 POLL_SECONDS = 5
-VERSION = "v16"
+VERSION = "v17"
 POPUP_SECONDS = 8
 
 CONFIG_FILE = "OA助手.ini"
@@ -81,6 +87,51 @@ def _config_path() -> str:
     """配置文件与 exe/脚本同目录，便于随拷随用。"""
     exe_dir = os.path.dirname(os.path.abspath(sys.argv[0])) or "."
     return os.path.join(exe_dir, CONFIG_FILE)
+
+
+def _tee_output_to_file() -> None:
+    """控制台输出同步落盘 exe 同目录 OA助手.log（现场排查证据）。
+
+    打包后的 exe 在无控制台/被重定向时输出是全缓冲的，进程被强杀即丢日志；
+    落盘后"断线/恢复/弹窗"等关键行随时可查，不再依赖黑窗口是否开着。
+    超过 1MB 自动轮转为 .old，不会无限增长。
+    """
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])) or ".",
+                            "OA助手.log")
+        if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+            try:
+                os.replace(path, path + ".old")
+            except OSError:
+                pass
+        f = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
+
+        class _Tee:
+            def __init__(self, streams):
+                self._streams = streams
+
+            def write(self, s):
+                for x in self._streams:
+                    try:
+                        x.write(s)
+                        x.flush()
+                    except Exception:
+                        pass
+
+            def flush(self):
+                for x in self._streams:
+                    try:
+                        x.flush()
+                    except Exception:
+                        pass
+
+        streams = [x for x in (sys.__stdout__, sys.__stderr__) if x is not None]
+        if streams:
+            sys.stdout = _Tee(streams + [f])
+            sys.stderr = _Tee(streams + [f])
+        f.write(time.strftime("\n==== %Y-%m-%d %H:%M:%S 助手启动（" + VERSION + "）====\n"))
+    except Exception:
+        pass
 
 
 def _obscure(s: str) -> str:
@@ -428,6 +479,7 @@ def manager_transition_msg(old: str, new: str, o: dict):
 
 
 def main() -> None:
+    _tee_output_to_file()
     print("=" * 52)
     print(f"  OA协同办公助手 {VERSION}（置顶弹窗提醒）")
     print("  收到派给自己的新工单时：屏幕右下角弹出提醒卡片")
@@ -555,6 +607,44 @@ def main() -> None:
     last_err_ts = 0.0
     last_beat_ts = 0.0
     wait_version = 0
+    down_since = 0.0         # 0=连接正常；否则=本次断线开始时刻
+    down_card_shown = False  # 灰色断线卡每次断线只弹一张，防轰炸
+
+    def fmt_dur(sec: float) -> str:
+        sec = int(sec)
+        if sec < 60:
+            return f"{sec} 秒"
+        if sec < 3600:
+            return f"{sec // 60} 分 {sec % 60:02d} 秒"
+        return f"{sec // 3600} 小时 {(sec % 3600) // 60:02d} 分"
+
+    def note_down() -> None:
+        """记录一次连接失败；断线持续超 15 秒弹灰卡提示（每次断线一张）。"""
+        nonlocal down_since, down_card_shown
+        now = time.time()
+        if down_since == 0.0:
+            down_since = now
+        elif not down_card_shown and now - down_since > 15:
+            down_card_shown = True
+            print(time.strftime("%H:%M:%S"),
+                  "[连接断开] 持续超 15 秒，已弹提示卡，每 5 秒自动重连中…")
+            popup("连接已断开",
+                  "与工单服务器的连接中断" + chr(10) + "助手正在自动重连，恢复后会立即告知",
+                  accent="#8a94a6")
+
+    def note_up() -> None:
+        """连接恢复正常：断线满 15 秒的才弹绿卡（短抖动只记控制台）。"""
+        nonlocal down_since, down_card_shown
+        if down_since == 0.0:
+            return
+        dur_text = fmt_dur(time.time() - down_since)
+        down_since = 0.0
+        down_card_shown = False
+        print(time.strftime("%H:%M:%S"),
+              f"[连接恢复] 断线 {dur_text} 后自动重连，断线期间的变化会立即追平")
+        popup("连接已恢复",
+              f"断线 {dur_text}，已自动重新连接" + chr(10) + "断线期间的新工单和反馈会立即补提醒",
+              accent="#67c23a")
 
     def fetch_and_alert() -> bool:
         """拉取全量相关工单并弹窗。返回是否成功。"""
@@ -622,12 +712,14 @@ def main() -> None:
         try:
             ok = fetch_and_alert()
             if not ok:
+                note_down()
                 now = time.time()
                 if now - last_err_ts > 60:
                     print(time.strftime("%H:%M:%S"), "连接服务器失败，自动重试中...")
                     last_err_ts = now
                 time.sleep(POLL_SECONDS)
                 continue
+            note_up()
             # 长轮询挂起等待：工单流转亚秒级唤醒，超时 15 秒做一次兜底全量拉取
             changed, wait_version = client.wait_changes(wait_version, timeout=15)
             if changed:
@@ -637,6 +729,7 @@ def main() -> None:
             return
         except Exception as e:
             print(time.strftime("%H:%M:%S"), "异常：", e)
+            note_down()
             time.sleep(POLL_SECONDS)
 
 

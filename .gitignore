@@ -34,3 +34,10 @@ gui-test-screenshots/
 .idea/
 Thumbs.db
 Desktop.ini
+
+# 助手运行痕迹（ini 含密码，log 为本机排查记录，均不入库）
+notifier/OA*.ini
+notifier/OA*.log
+notifier/OA*.log.old
+dist/
+build/
